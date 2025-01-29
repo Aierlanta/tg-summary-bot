@@ -11,6 +11,8 @@ from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     ContextTypes,
+    MessageHandler,
+    filters,
 )
 
 from gemini_api import summarize_text  # 引入Gemini API模块
@@ -105,15 +107,20 @@ async def summary_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not os.path.exists(directory):
         os.makedirs(directory)
 
-    # 创建txt文件并记录模拟消息
+    # 创建txt文件并记录实际消息
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     file_name = f"summary_{timestamp}.txt"
     file_path = os.path.join(directory, file_name)
     try:
         with open(file_path, "w", encoding="utf-8") as f:
-            for i in range(msg_count):
-                f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [{user}] [message_{i}]\n")
-        logger.info(f"消息已记录到文件: {file_path}")
+            # 读取最新的消息条数
+            # 假设日志文件是按时间顺序记录的
+            with open(os.path.join(directory, "messages.log"), "r", encoding="utf-8") as log_file:
+                lines = log_file.readlines()
+                selected_lines = lines[-msg_count:]
+                for line in selected_lines:
+                    f.write(line)
+        logger.info(f"实际消息已记录到文件: {file_path}")
     except Exception as e:
         logger.error(f"写入日志文件失败: {e}")
         await update.message.reply_text("无法记录消息，请稍后再试。")
@@ -168,9 +175,28 @@ async def addgroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("请在命令后输入要添加的群组名称或ID")
         logger.warning("addgroup命令缺少群组名称或ID")
 
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    捕获所有非命令消息并记录到日志文件。
+    """
+    user = update.message.from_user.username
+    text = update.message.text
+    timestamp = update.message.date.strftime('%Y-%m-%d %H:%M:%S')
+    log_entry = f"[{timestamp}] [{user}] {text}\n"
+    directory = "./logs"
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+    file_path = os.path.join(directory, "messages.log")
+    try:
+        with open(file_path, "a", encoding="utf-8") as f:
+            f.write(log_entry)
+        logger.info(f"记录消息到文件: {file_path}")
+    except Exception as e:
+        logger.error(f"写入消息文件失败: {e}")
+
 def main():
     """
-    初始化并启动Bot，注册命令处理器。
+    初始化并启动Bot，注册命令处理器和消息处理器。
     """
     bot_token = "YOUR_TELEGRAM_BOT_TOKEN"  # 替换为实际Token
     application = ApplicationBuilder().token(bot_token).build()
@@ -181,7 +207,10 @@ def main():
     application.add_handler(CommandHandler("summary", summary_command))
     application.add_handler(CommandHandler("addgroup", addgroup_command))
 
-    # 启动调度线程，每天清理txt文件
+    # 注册消息处理器，用于捕获并记录实际消息
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+
+    # 创建调度线程，每天清理txt文件
     schedule_thread = threading.Thread(target=job_scheduler, daemon=True)
     schedule_thread.start()
 
