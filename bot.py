@@ -274,20 +274,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"写入消息文件失败: {e}")
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /help 指令：列出所有可用的命令。
-    """
-    help_text = (
-        "/start - 启动 Bot\n"
-        "/setapikey <key> - 设置 Gemini API Key\n"
-        "/addgroup <group_name> - 添加群组\n"
-        "/switchgroup <group_name> - 切换当前群组\n"
-        "/summary <消息条数> - 生成消息摘要\n"
-        "/help - 显示帮助信息"
-    )
-    await update.message.reply_text(help_text)
-
 async def set_my_commands(application):
     """
     设置Bot的命令列表。
@@ -334,7 +320,10 @@ def main():
     """
     同步调用异步的 main_async 函数。
     """
-    asyncio.run(main_async())
+    try:
+        asyncio.run(main_async())
+    except RuntimeError as e:
+        logger.error(f"RuntimeError: {e}")
 
 def run_bot_forever():
     """
