@@ -34,8 +34,8 @@ pip install -r requirements.txt
 2. **Bot命令**：
    - `/start` - 启动Bot。
    - `/setapikey <key>` - 设置Google Gemini API Key。
-   - `/addgroup <name>` - 添加群组。
-   - `/switchgroup <name>` - 切换当前操作的群组。
+   - `/addgroup <id>` - 添加群组。
+   - `/switchgroup <id>` - 切换当前操作的群组。
    - `/summary <count>` - 生成最近<code>count</code>条消息的摘要。
    - `/help` - 显示帮助信息。
 
