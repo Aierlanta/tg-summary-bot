@@ -20,7 +20,7 @@ from gemini_api import summarize_text  # 引入Gemini API模块
 
 # 配置日志输出等级，便于调试和记录
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(level别)s - %(message)s',
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',  # 修正 'level别' 为 'levelname'
     level=logging.INFO
 )
 
@@ -274,9 +274,36 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"写入消息文件失败: {e}")
 
-def main():
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    初始化并启动Bot，注册命令处理器和消息处理器。
+    /help 指令：列出所有可用的命令。
+    """
+    help_text = (
+        "/start - 启动 Bot\n"
+        "/setapikey <key> - 设置 Gemini API Key\n"
+        "/addgroup <group_name> - 添加群组\n"
+        "/switchgroup <group_name> - 切换当前群组\n"
+        "/summary <消息条数> - 生成消息摘要\n"
+        "/help - 显示帮助信息"
+    )
+    await update.message.reply_text(help_text)
+
+async def set_my_commands(application):
+    """
+    设置Bot的命令列表。
+    """
+    await application.bot.set_my_commands([
+        ('start', '启动 Bot'),
+        ('setapikey', '设置 Gemini API Key'),
+        ('addgroup', '添加群组'),
+        ('switchgroup', '切换当前群组'),
+        ('summary', '生成消息摘要'),
+        ('help', '显示帮助信息'),
+    ])
+
+async def main_async():
+    """
+    异步初始化并启动Bot，注册命令处理器和消息处理器。
     """
     bot_token = "YOUR_TELEGRAM_BOT_TOKEN"  # 替换为实际Token
     application = ApplicationBuilder().token(bot_token).build()
@@ -293,14 +320,7 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
     # 设置 Bot 的命令列表
-    application.bot.set_my_commands([
-        ('start', '启动 Bot'),
-        ('setapikey', '设置 Gemini API Key'),
-        ('addgroup', '添加群组'),
-        ('switchgroup', '切换当前群组'),
-        ('summary', '生成消息摘要'),
-        ('help', '显示帮助信息'),
-    ])
+    await set_my_commands(application)
 
     # 创建调度线程，每天清理txt文件
     schedule_thread = threading.Thread(target=job_scheduler, daemon=True)
@@ -308,7 +328,13 @@ def main():
 
     # 启动Bot
     logger.info("Bot开始轮询...")
-    application.run_polling()
+    await application.run_polling()
+
+def main():
+    """
+    同步调用异步的 main_async 函数。
+    """
+    asyncio.run(main_async())
 
 def run_bot_forever():
     """
