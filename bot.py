@@ -24,6 +24,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+
 def load_config(config_file="config.json"):
     if not os.path.exists(config_file):
         raise FileNotFoundError(f"{config_file} 文件不存在。")
@@ -82,30 +84,33 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Bot已启动")
 
 async def setapikey(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """处理 /setapikey 命令"""
-    user = update.message.from_user.username
+    global API_KEY
+    user = update.effective_user.username
+    
     if user not in WHITE_LIST:
-        await update.message.reply_text("你不在白名单中，无法使用此功能")
+        await update.message.reply_text("❌ 你不在白名单中")
         return
         
-    if context.args:
-        global API_KEY
+    if not context.args:
+        await update.message.reply_text("⚠️ 请在命令后输入API KEY")
+        return
+        
+    try:
+        # 更新全局变量
         API_KEY = context.args[0]
-        try:
-            with open('api_key.txt', 'w', encoding='utf-8') as f:
-                f.write(API_KEY)
-            try:
-                init_gemini()
-                await update.message.reply_text("API KEY已设置并验证成功")
-                logger.info(f"用户 {user} 设置了新的API KEY")
-            except Exception as e:
-                logger.error(f"API KEY验证失败: {e}")
-                await update.message.reply_text(f"API KEY设置失败: {str(e)}")
-        except Exception as e:
-            logger.error(f"写入API KEY失败: {e}")
-            await update.message.reply_text("保存API KEY时发生错误")
-    else:
-        await update.message.reply_text("请在命令后输入API KEY")
+        
+        # 持久化保存
+        with open('api_key.txt', 'w') as f:
+            f.write(API_KEY)
+            
+        # 初始化 Gemini（无需传参）
+        init_gemini()  # 修改后不再需要参数
+        await update.message.reply_text("✅ API KEY 设置成功")
+        logger.info(f"用户 {user} 更新了API KEY")
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ 设置失败: {str(e)}")
+        logger.error(f"API KEY 设置错误: {e}")
 
 async def addgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理 /addgroup 命令"""
@@ -166,30 +171,59 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         with open(os.path.join(directory, "messages.log"), "r", encoding="utf-8") as lf:
             lines = lf.readlines()
-            group_lines = [ln for ln in lines if f"[{current_group}]" in ln]
+            # 更精确的群组匹配逻辑
+            group_lines = [
+                ln for ln in lines 
+                if f"[{current_group}] " in ln  # 添加空格避免部分匹配
+            ]
+            logger.info(f"当前筛选群组: {current_group}")
+            logger.info(f"匹配到的日志行示例: {group_lines[:3]}")  # 打印前3条匹配记录
             selected_lines = group_lines[-msg_count:]
+            
             if not selected_lines:
                 await update.message.reply_text("未找到相关消息记录")
                 return
+                
+        # 保存原始记录并生成带链接的版本
         with open(file_path, "w", encoding="utf-8") as f:
-            f.writelines(selected_lines)
+            # 提取关键信息并格式化
+            formatted_lines = []
+            for line in selected_lines:
+                try:
+                    parts = line.split("] ")
+                    timestamp = parts[0][1:]
+                    chat = parts[1][1:]
+                    user = parts[2][5:]
+                    link = parts[3][6:]
+                    content = "] ".join(parts[4:]).strip()
+                    formatted_lines.append(
+                        f"{timestamp} {user}：{content}（[查看消息]({link})）\n"
+                    )
+                except Exception as e:
+                    logger.warning(f"解析日志行失败: {line} - {str(e)}")
+            
+            if not formatted_lines:
+                await update.message.reply_text("有效消息内容为空")
+                return
+                
+            f.writelines(formatted_lines)
     except Exception as e:
         logger.error(f"处理日志文件失败: {e}")
         await update.message.reply_text("读取消息记录失败")
-        return
-
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            content = f.read()
-    except Exception as e:
-        logger.error(f"读取临时文件失败: {e}")
-        await update.message.reply_text("处理消息内容失败")
         return
 
     await update.message.reply_text("正在生成摘要，请稍候...")
     retries = 0
     while retries < RETRY_LIMIT:
         try:
+            # 读取临时文件内容
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+                
+            if not content:
+                await update.message.reply_text("无可用内容进行摘要")
+                return
+                
             summary_result = summarize_text(content)
             await update.message.reply_text(f"摘要生成完成:\n\n{summary_result}")
             try:
@@ -208,19 +242,38 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理普通消息"""
-    user = update.message.from_user.username
+    if not update.message or not update.effective_chat:
+        logger.warning("收到无效消息类型")
+        return
+
+    user = update.effective_user.username if update.effective_user else "未知用户"
     text = update.message.text
-    chat_title = update.effective_chat.title
+    chat = update.effective_chat
     timestamp = update.message.date.strftime('%Y-%m-%d %H:%M:%S')
+    
+    # 生成消息链接
+    message_id = update.message.message_id
+    chat_id = str(abs(chat.id))
+    # 如果chat_id以"100"开头，去掉这个前缀
+    if chat_id.startswith('100'):
+        chat_id = chat_id[3:]
+    link = f"https://t.me/c/{chat_id}/{message_id}"
     
     directory = "./logs"
     os.makedirs(directory, exist_ok=True)
     file_path = os.path.join(directory, "messages.log")
     
     try:
+        log_entry = (
+            f"[{timestamp}] "
+            f"[{chat.id}] "
+            f"[UID:{user}] "
+            f"[LINK:{link}] "
+            f"{text}\n"
+        )
         with open(file_path, "a", encoding="utf-8") as f:
-            f.write(f"[{timestamp}] [{chat_title}] [{user}] {text}\n")
-        logger.debug(f"已记录消息: {chat_title}")
+            f.write(log_entry)
+        logger.debug(f"已记录消息: {chat.id}")
     except Exception as e:
         logger.error(f"写入消息文件失败: {e}")
 
@@ -236,6 +289,15 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(text)
 
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """全局错误处理"""
+    logger.error(f"处理更新时发生异常: {context.error}", exc_info=True)
+    
+    if update.effective_message:
+        await update.effective_message.reply_text(
+            "处理请求时发生错误，请联系管理员"
+        )
+
 def main():
     """主函数"""
     bot_token = config.get("bot_token")
@@ -245,6 +307,7 @@ def main():
 
     # 创建应用
     application = Application.builder().token(bot_token).build()
+    application.add_error_handler(error_handler)  # 添加这行
 
     # 注册命令处理器
     application.add_handler(CommandHandler("start", start))
