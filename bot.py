@@ -18,6 +18,15 @@ from telegram.ext import (
 
 from gemini_api import summarize_text  # 引入Gemini API模块
 
+# 加载配置文件
+def load_config(config_file="config.json"):
+    if not os.path.exists(config_file):
+        raise FileNotFoundError(f"{config_file} 文件不存在。请创建并添加必要的配置。")
+    with open(config_file, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+config = load_config()
+
 # 配置日志输出等级，便于调试和记录
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',  # 修正 'level别' 为 'levelname'
@@ -27,7 +36,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # 用户白名单，只有这里的用户名才具备使用Bot的权限
-WHITE_LIST = ["user1", "user2"]
+WHITE_LIST = config.get("white_list", [])
 
 # 存储群组信息的文件路径
 GROUPS_FILE = "groups.json"
@@ -291,50 +300,42 @@ async def main_async():
     """
     异步初始化并启动Bot，注册命令处理器和消息处理器。
     """
-    bot_token = "YOUR_TELEGRAM_BOT_TOKEN"  # 替换为实际Token
-    application = ApplicationBuilder().token(bot_token).build()
+    bot_token = config.get("bot_token")
+    if not bot_token:
+        logger.error("Bot Token 未在配置文件中设置。")
+        return
 
-    # 注册命令处理器
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("setapikey", set_apikey_command))
-    application.add_handler(CommandHandler("addgroup", addgroup_command))
-    application.add_handler(CommandHandler("switchgroup", switchgroup_command))
-    application.add_handler(CommandHandler("summary", summary_command))
-    application.add_handler(CommandHandler("help", help_command))  # 注册 /help 命令
-
-    # 注册消息处理器，用于捕获并记录实际消息
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
-
-    # 设置 Bot 的命令列表
-    await set_my_commands(application)
-
-    # 创建调度线程，每天清理txt文件
-    schedule_thread = threading.Thread(target=job_scheduler, daemon=True)
-    schedule_thread.start()
-
-    # 启动Bot
-    logger.info("Bot开始轮询...")
-    await application.run_polling()
-
-def main():
-    """
-    同步调用异步的 main_async 函数。
-    """
-    try:
-        asyncio.run(main_async())
-    except RuntimeError as e:
-        logger.error(f"RuntimeError: {e}")
-
-def run_bot_forever():
-    """
-    异常退出后自动重启Bot，确保可持续运行。
-    """
     while True:
         try:
-            main()
+            application = ApplicationBuilder().token(bot_token).build()
+
+            # 注册命令处理器
+            application.add_handler(CommandHandler("start", start_command))
+            application.add_handler(CommandHandler("setapikey", set_apikey_command))
+            application.add_handler(CommandHandler("addgroup", addgroup_command))
+            application.add_handler(CommandHandler("switchgroup", switchgroup_command))
+            application.add_handler(CommandHandler("summary", summary_command))
+            application.add_handler(CommandHandler("help", help_command))  # 注册 /help 命令
+            application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+
+            # 设置 Bot 的命令列表
+            await set_my_commands(application)
+
+            # 创建调度线程，每天清理txt文件
+            schedule_thread = threading.Thread(target=job_scheduler, daemon=True)
+            schedule_thread.start()
+
+            # 启动Bot
+            logger.info("Bot开始轮询...")
+            await application.run_polling()
         except Exception as e:
             logger.error(f"Bot异常退出: {e}，5秒后重试...")
-            time.sleep(5)
+            await asyncio.sleep(5)
 
 if __name__ == "__main__":
-    run_bot_forever()
+    try:
+        asyncio.run(main_async())
+    except KeyboardInterrupt:
+        logger.info("Bot已停止")
+    except Exception as e:
+        logger.error(f"Unhandled exception: {e}")
