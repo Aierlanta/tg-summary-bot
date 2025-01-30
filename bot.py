@@ -1,9 +1,9 @@
 import os
 import logging
-import asyncio
 import json
 import schedule
 import time
+import threading
 from datetime import datetime
 
 from telegram import Update
@@ -13,9 +13,10 @@ from telegram.ext import (
     ContextTypes,
     MessageHandler,
     filters,
+    Application
 )
 
-from gemini_api import summarize_text, init_gemini  # 导入Gemini API相关函数
+from gemini_api import summarize_text, init_gemini
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -56,9 +57,11 @@ def save_groups(groups):
 
 GROUP_LIST = load_groups()
 
-async def clean_txt_files_async():
+def clean_txt_files():
+    """定时清理临时文件"""
     directory = "./logs"
-    os.makedirs(directory, exist_ok=True)
+    if not os.path.exists(directory):
+        os.makedirs(directory)
     for filename in os.listdir(directory):
         if filename.endswith(".txt"):
             try:
@@ -66,29 +69,31 @@ async def clean_txt_files_async():
                 logger.info(f"删除文件: {filename}")
             except Exception as e:
                 logger.error(f"删除文件失败: {e}")
-    await asyncio.sleep(0)
 
-async def job_scheduler_async():
-    schedule.every().day.at("04:00").do(lambda: asyncio.create_task(clean_txt_files_async()))
+def run_schedule():
+    """调度任务线程"""
+    schedule.every().day.at("04:00").do(clean_txt_files)
     while True:
         schedule.run_pending()
-        await asyncio.sleep(1)
+        time.sleep(1)
 
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理 /start 命令"""
     await update.message.reply_text("Bot已启动")
 
-async def setapikey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def setapikey(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理 /setapikey 命令"""
     user = update.message.from_user.username
     if user not in WHITE_LIST:
         await update.message.reply_text("你不在白名单中，无法使用此功能")
         return
         
     if context.args:
+        global API_KEY
         API_KEY = context.args[0]
         try:
             with open('api_key.txt', 'w', encoding='utf-8') as f:
                 f.write(API_KEY)
-            # 验证API是否可用
             try:
                 init_gemini()
                 await update.message.reply_text("API KEY已设置并验证成功")
@@ -102,35 +107,42 @@ async def setapikey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("请在命令后输入API KEY")
 
-async def addgroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def addgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理 /addgroup 命令"""
     user = update.message.from_user.username
     if user not in WHITE_LIST:
         await update.message.reply_text("你不在白名单中，无法使用此功能")
         return
+        
     if context.args:
         group_name = " ".join(context.args)
         GROUP_LIST[group_name] = True
         save_groups(GROUP_LIST)
         await update.message.reply_text(f"已添加群组: {group_name}")
+        logger.info(f"用户 {user} 添加了群组 {group_name}")
     else:
-        await update.message.reply_text("缺少群组名称参数")
+        await update.message.reply_text("请在命令后输入群组名称")
 
-async def switchgroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def switchgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理 /switchgroup 命令"""
     user = update.message.from_user.username
     if user not in WHITE_LIST:
         await update.message.reply_text("你不在白名单中，无法使用此功能")
         return
+        
     if context.args:
         group_name = " ".join(context.args)
         if group_name in GROUP_LIST:
             context.user_data['current_group'] = group_name
             await update.message.reply_text(f"已切换到群组: {group_name}")
+            logger.info(f"用户 {user} 切换到群组 {group_name}")
         else:
             await update.message.reply_text("群组不存在，请先添加该群组")
     else:
-        await update.message.reply_text("缺少群组名称参数")
+        await update.message.reply_text("请在命令后输入群组名称")
 
-async def summary_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理 /summary 命令"""
     user = update.message.from_user.username
     if user not in WHITE_LIST:
         await update.message.reply_text("你不在白名单中，无法使用此功能")
@@ -166,11 +178,6 @@ async def summary_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("读取消息记录失败")
         return
 
-    retries = 0
-    success = False
-    summary_result = ""
-    
-    # 读取文件内容
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
@@ -179,94 +186,87 @@ async def summary_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("处理消息内容失败")
         return
 
-    # 调用Gemini API进行摘要
     await update.message.reply_text("正在生成摘要，请稍候...")
-    while retries < RETRY_LIMIT and not success:
+    retries = 0
+    while retries < RETRY_LIMIT:
         try:
             summary_result = summarize_text(content)
-            success = True
-            logger.info(f"成功为群组 {current_group} 生成摘要")
+            await update.message.reply_text(f"摘要生成完成:\n\n{summary_result}")
+            try:
+                os.remove(file_path)
+                logger.info(f"清理临时文件: {file_path}")
+            except Exception as e:
+                logger.error(f"删除临时文件失败: {e}")
+            return
         except Exception as e:
             retries += 1
             logger.error(f"摘要生成失败 (尝试 {retries}/{RETRY_LIMIT}): {e}")
-            if retries < RETRY_LIMIT:
-                await asyncio.sleep(2)
-            else:
-                await update.message.reply_text(f"生成摘要失败: {str(e)}")
-                return
-
-    if success:
-        await update.message.reply_text(f"摘要生成完成:\n\n{summary_result}")
-        try:
-            os.remove(file_path)
-            logger.info(f"清理临时文件: {file_path}")
-        except Exception as e:
-            logger.error(f"删除临时文件失败: {e}")
-    else:
-        await update.message.reply_text("生成摘要失败，请稍后重试")
-        logger.error(f"摘要生成失败，临时文件保留于: {file_path}")
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "/start - 启动 Bot\n"
-        "/setapikey <key> - 设置 Gemini API Key\n"
-        "/addgroup <group_name> - 添加群组\n"
-        "/switchgroup <group_name> - 切换当前群组\n"
-        "/summary <条数> - 生成消息摘要\n"
-        "/help - 帮助信息"
-    )
-    await update.message.reply_text(text)
+            time.sleep(2)
+    
+    await update.message.reply_text("生成摘要失败，请稍后重试")
+    logger.error(f"摘要生成失败，临时文件保留于: {file_path}")
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理普通消息"""
     user = update.message.from_user.username
     text = update.message.text
     chat_title = update.effective_chat.title
     timestamp = update.message.date.strftime('%Y-%m-%d %H:%M:%S')
-    log_entry = f"[{timestamp}] [{chat_title}] [{user}] {text}\n"
+    
     directory = "./logs"
     os.makedirs(directory, exist_ok=True)
     file_path = os.path.join(directory, "messages.log")
+    
     try:
         with open(file_path, "a", encoding="utf-8") as f:
-            f.write(log_entry)
+            f.write(f"[{timestamp}] [{chat_title}] [{user}] {text}\n")
+        logger.debug(f"已记录消息: {chat_title}")
     except Exception as e:
         logger.error(f"写入消息文件失败: {e}")
 
-async def set_my_commands(application):
-    await application.bot.set_my_commands([
-        ("start", "启动 Bot"),
-        ("setapikey", "设置 Gemini API Key"),
-        ("addgroup", "添加群组"),
-        ("switchgroup", "切换当前群组"),
-        ("summary", "生成消息摘要"),
-        ("help", "帮助信息"),
-    ])
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理 /help 命令"""
+    text = (
+        "/start - 启动 Bot\n"
+        "/setapikey <key> - 设置 API Key\n"
+        "/addgroup <name> - 添加群组\n"
+        "/switchgroup <name> - 切换群组\n"
+        "/summary <count> - 生成摘要\n"
+        "/help - 显示帮助信息"
+    )
+    await update.message.reply_text(text)
 
-async def main_async():
+def main():
+    """主函数"""
     bot_token = config.get("bot_token")
     if not bot_token:
         logger.error("未配置 bot_token")
         return
-    application = ApplicationBuilder().token(bot_token).build()
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("setapikey", setapikey_command))
-    application.add_handler(CommandHandler("addgroup", addgroup_command))
-    application.add_handler(CommandHandler("switchgroup", switchgroup_command))
-    application.add_handler(CommandHandler("summary", summary_command))
+
+    # 创建应用
+    application = Application.builder().token(bot_token).build()
+
+    # 注册命令处理器
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("setapikey", setapikey))
+    application.add_handler(CommandHandler("addgroup", addgroup))
+    application.add_handler(CommandHandler("switchgroup", switchgroup))
+    application.add_handler(CommandHandler("summary", summary))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
-    await set_my_commands(application)
-    asyncio.create_task(job_scheduler_async())
+
+    # 启动调度任务线程
+    schedule_thread = threading.Thread(target=run_schedule, daemon=True)
+    schedule_thread.start()
+
+    # 启动 Bot
     logger.info("Bot开始轮询...")
-    try:
-        await application.run_polling()
-    except Exception as e:
-        logger.error(f"Bot运行时出现异常: {e}")
+    application.run_polling()
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main_async())
+        main()
     except KeyboardInterrupt:
-        logger.info("Bot已停止")
+        logger.info("收到停止信号，Bot已关闭")
     except Exception as e:
-        logger.error(f"Unhandled exception: {e}")
+        logger.error(f"运行时错误: {e}")
