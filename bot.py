@@ -225,7 +225,16 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
                 
             summary_result = summarize_text(content)
-            await update.message.reply_text(f"摘要生成完成:\n\n{summary_result}")
+
+            # 分割消息
+            max_message_length = 4000  # Telegram 消息长度限制
+            if len(summary_result) > max_message_length:
+                parts = [summary_result[i:i + max_message_length] for i in range(0, len(summary_result), max_message_length)]
+                for part in parts:
+                    await update.message.reply_text(f"摘要生成完成:\n\n{part}")
+            else:
+                await update.message.reply_text(f"摘要生成完成:\n\n{summary_result}")
+
             try:
                 os.remove(file_path)
                 logger.info(f"清理临时文件: {file_path}")
@@ -235,6 +244,9 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             retries += 1
             logger.error(f"摘要生成失败 (尝试 {retries}/{RETRY_LIMIT}): {e}")
+            if "Message is too long" in str(e):
+                await update.message.reply_text("摘要内容过长，请减少消息数量后重试")
+                return
             time.sleep(2)
     
     await update.message.reply_text("生成摘要失败，请稍后重试")
